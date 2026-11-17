@@ -57,8 +57,9 @@ python -m venv .venv
 # Windows: .venv\Scripts\activate
 # Linux/macOS: source .venv/bin/activate
 
-pip install -e .
+pip install -e ".[dev]"
 python -m unittest discover -s tests -v
+ruff check src tests
 python -m agent_supervisor.demo
 ```
 
