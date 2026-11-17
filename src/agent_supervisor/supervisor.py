@@ -12,9 +12,22 @@ from .store import JsonStore
 class Supervisor:
     _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
-    def __init__(self, root: Path, stall_after: timedelta = timedelta(minutes=30)):
+    def __init__(
+        self,
+        root: Path,
+        stall_after: timedelta = timedelta(minutes=30),
+        *,
+        max_active_children: int = 3,
+        max_total_agents: int = 6,
+    ):
+        if max_active_children < 0:
+            raise ValueError("max_active_children must be >= 0")
+        if max_total_agents < 1 or max_total_agents < max_active_children + 1:
+            raise ValueError("max_total_agents must allow MAIN_AGENT plus child capacity")
         self.store = JsonStore(root)
         self.stall_after = stall_after
+        self.max_active_children = max_active_children
+        self.max_total_agents = max_total_agents
 
     @staticmethod
     def _now() -> datetime:
@@ -87,6 +100,17 @@ class Supervisor:
         self.store.write(f"spawn_requests/pending/{request_id}.json", payload)
         return payload
 
+    def _active_agent_records(self) -> list[AgentRecord]:
+        records = []
+        agents_root = self.store.root / "agents"
+        if not agents_root.exists():
+            return records
+        for state_path in agents_root.glob("*/state.json"):
+            rec = AgentRecord.from_dict(self.store.read(str(state_path.relative_to(self.store.root))))
+            if rec.lifecycle == AgentLifecycle.ACTIVE:
+                records.append(rec)
+        return records
+
     def approve_child(self, request_id: str) -> AgentRecord:
         """Human approval boundary: materialize one pending child request."""
         self._validate_id(request_id, "request_id")
@@ -94,6 +118,12 @@ class Supervisor:
         if not self.store.exists(pending):
             raise FileNotFoundError(request_id)
         request = self.store.read(pending)
+        active = self._active_agent_records()
+        active_children = sum(rec.agent_id != "MAIN_AGENT" for rec in active)
+        if active_children >= self.max_active_children:
+            raise RuntimeError("active child limit reached")
+        if len(active) >= self.max_total_agents:
+            raise RuntimeError("total active agent limit reached")
         child = self.create_child(request["requested_agent_id"])
         decision = {
             **request,

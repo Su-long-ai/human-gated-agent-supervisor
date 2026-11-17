@@ -101,6 +101,30 @@ class SupervisorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsafe"):
             sup.request_child("../escape", "RESEARCH", "x", "y")
 
+    def test_active_child_quota_blocks_and_releases(self):
+        td = TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        sup = Supervisor(Path(td.name), max_active_children=1, max_total_agents=2)
+        sup.bootstrap_main()
+
+        first = sup.request_child("CHILD_A", "RESEARCH", "task A", "parallel work")
+        sup.approve_child(first["request_id"])
+        second = sup.request_child("CHILD_B", "RESEARCH", "task B", "parallel work")
+        with self.assertRaisesRegex(RuntimeError, "child limit"):
+            sup.approve_child(second["request_id"])
+
+        round_state = self.prepare_waiting_commit(sup, "CHILD_A")
+        sup.commit_round(
+            "CHILD_A",
+            round_state.lease_id,
+            "done",
+            "safe",
+            task_complete=True,
+            summary="finished",
+        )
+        child_b = sup.approve_child(second["request_id"])
+        self.assertEqual(child_b.agent_id, "CHILD_B")
+
 
 if __name__ == "__main__":
     unittest.main()

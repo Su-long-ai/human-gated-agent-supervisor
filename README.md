@@ -48,6 +48,7 @@ TASK_COMPLETE
 - **Local mailbox.** Agents communicate through deterministic local files instead of depending on chat URLs.
 - **Atomic JSON writes.** State mutations use replace-on-write persistence.
 - **Safe logical IDs.** Agent/request identifiers are validated before they can become filesystem paths.
+- **Bounded expansion.** Human-approved child creation still obeys configurable active-child and total-agent limits; completed children release capacity.
 
 ## Quick start
 
@@ -61,7 +62,7 @@ python -m unittest discover -s tests -v
 python -m agent_supervisor.demo
 ```
 
-The public test suite currently covers **9 state/coordination paths**, including stale-lease rejection, watchdog stalls, explicit task completion, spawn approval/denial, mailbox addressing and unsafe-ID rejection.
+The public test suite currently covers **10 state/coordination paths**, including stale-lease rejection, watchdog stalls, explicit task completion, spawn approval/denial, mailbox addressing and unsafe-ID rejection.
 
 ## Example
 
@@ -113,6 +114,8 @@ src/agent_supervisor/
 tests/
   test_supervisor.py
 ```
+
+For deeper discussion of leases, rollover, failure handling and human-gated spawning, see [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## What is intentionally not included
 
