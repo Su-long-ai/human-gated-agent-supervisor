@@ -42,11 +42,12 @@ TASK_COMPLETE
 
 - **Logical agents outlive conversations.** A new generation can replace a conversation without changing the agent identity.
 - **Per-round leases.** Heartbeats and commits must match the current lease, so late/stale writes cannot impersonate current work.
-- **Human gates.** The runtime does not auto-send prompts or scrape model UIs.
+- **Human gates.** Child-agent spawn requests stay pending until explicitly approved or denied; the runtime does not auto-send prompts or scrape model UIs.
 - **Heartbeats + watchdog.** Stale work is marked `STALLED`; it is not silently retried.
 - **Explicit task completion.** Completing one round is different from completing the assigned task.
 - **Local mailbox.** Agents communicate through deterministic local files instead of depending on chat URLs.
 - **Atomic JSON writes.** State mutations use replace-on-write persistence.
+- **Safe logical IDs.** Agent/request identifiers are validated before they can become filesystem paths.
 
 ## Quick start
 
@@ -60,6 +61,8 @@ python -m unittest discover -s tests -v
 python -m agent_supervisor.demo
 ```
 
+The public test suite currently covers **9 state/coordination paths**, including stale-lease rejection, watchdog stalls, explicit task completion, spawn approval/denial, mailbox addressing and unsafe-ID rejection.
+
 ## Example
 
 ```python
@@ -68,6 +71,15 @@ from agent_supervisor.supervisor import Supervisor
 
 sup = Supervisor(Path("./demo_state"))
 sup.bootstrap_main("MAIN_AGENT")
+spawn = sup.request_child(
+    "RESEARCHER",
+    role="RESEARCH",
+    task="Inspect module A",
+    reason="parallel review",
+)
+# Human approval boundary: no child exists before this call.
+sup.approve_child(spawn["request_id"])
+
 sup.create_round("MAIN_AGENT", task="Inspect the project and produce a plan")
 
 sup.confirm_project("MAIN_AGENT")

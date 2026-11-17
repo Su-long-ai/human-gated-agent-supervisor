@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import re
 from uuid import uuid4
 
 from .model import AgentLifecycle, AgentRecord, RoundRecord, RoundState
@@ -9,6 +10,8 @@ from .store import JsonStore
 
 
 class Supervisor:
+    _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
     def __init__(self, root: Path, stall_after: timedelta = timedelta(minutes=30)):
         self.store = JsonStore(root)
         self.stall_after = stall_after
@@ -21,7 +24,14 @@ class Supervisor:
     def _iso(dt: datetime) -> str:
         return dt.astimezone(timezone.utc).isoformat()
 
+    @classmethod
+    def _validate_id(cls, value: str, field: str = "id") -> str:
+        if not cls._SAFE_ID.fullmatch(value):
+            raise ValueError(f"unsafe {field}: {value!r}")
+        return value
+
     def _agent_path(self, agent_id: str) -> str:
+        self._validate_id(agent_id, "agent_id")
         return f"agents/{agent_id}/state.json"
 
     def _round_path(self, round_id: str, name: str = "round.json") -> str:
@@ -41,11 +51,85 @@ class Supervisor:
         self.store.write(self._agent_path(rec.agent_id), rec.to_dict())
 
     def create_child(self, agent_id: str) -> AgentRecord:
+        self._validate_id(agent_id, "agent_id")
         if self.store.exists(self._agent_path(agent_id)):
             raise ValueError(f"agent already exists: {agent_id}")
         rec = AgentRecord(agent_id=agent_id)
         self._save_agent(rec)
         return rec
+
+    def request_child(
+        self,
+        requested_agent_id: str,
+        role: str,
+        task: str,
+        reason: str,
+        *,
+        requested_by: str = "MAIN_AGENT",
+    ) -> dict:
+        """Create a pending spawn request; it does not create the child."""
+        if requested_by != "MAIN_AGENT":
+            raise ValueError("only MAIN_AGENT may request child agents")
+        self._validate_id(requested_agent_id, "requested_agent_id")
+        request_id = f"spawn-{uuid4().hex[:12]}"
+        payload = {
+            "request_id": request_id,
+            "requested_by": requested_by,
+            "requested_agent_id": requested_agent_id,
+            "role": role.strip(),
+            "task": task.strip(),
+            "reason": reason.strip(),
+            "status": "PENDING",
+            "created_at": self._iso(self._now()),
+        }
+        if not payload["role"] or not payload["task"]:
+            raise ValueError("role and task must not be empty")
+        self.store.write(f"spawn_requests/pending/{request_id}.json", payload)
+        return payload
+
+    def approve_child(self, request_id: str) -> AgentRecord:
+        """Human approval boundary: materialize one pending child request."""
+        self._validate_id(request_id, "request_id")
+        pending = f"spawn_requests/pending/{request_id}.json"
+        if not self.store.exists(pending):
+            raise FileNotFoundError(request_id)
+        request = self.store.read(pending)
+        child = self.create_child(request["requested_agent_id"])
+        decision = {
+            **request,
+            "status": "APPROVED",
+            "decided_at": self._iso(self._now()),
+        }
+        self.store.write(f"spawn_requests/approved/{request_id}.json", decision)
+        self.send_message(
+            "SUPERVISOR",
+            request["requested_by"],
+            f"spawn approved: {request['requested_agent_id']} ({request['role']})",
+        )
+        (self.store.root / pending).unlink()
+        return child
+
+    def deny_child(self, request_id: str, rationale: str) -> dict:
+        """Human denial boundary: persist the decision without creating a child."""
+        self._validate_id(request_id, "request_id")
+        pending = f"spawn_requests/pending/{request_id}.json"
+        if not self.store.exists(pending):
+            raise FileNotFoundError(request_id)
+        request = self.store.read(pending)
+        decision = {
+            **request,
+            "status": "DENIED",
+            "rationale": rationale.strip(),
+            "decided_at": self._iso(self._now()),
+        }
+        self.store.write(f"spawn_requests/denied/{request_id}.json", decision)
+        self.send_message(
+            "SUPERVISOR",
+            request["requested_by"],
+            f"spawn denied: {request['requested_agent_id']} - {decision['rationale']}",
+        )
+        (self.store.root / pending).unlink()
+        return decision
 
     def create_round(self, agent_id: str, task: str) -> RoundRecord:
         agent = self.agent(agent_id)

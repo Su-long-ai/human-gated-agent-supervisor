@@ -16,7 +16,7 @@ class SupervisorTests(unittest.TestCase):
         return sup
 
     def prepare_waiting_commit(self, sup, agent_id="MAIN_AGENT"):
-        r = sup.create_round(agent_id, "test task")
+        sup.create_round(agent_id, "test task")
         sup.confirm_project(agent_id)
         sup.confirm_model(agent_id)
         sup.mark_sent(agent_id)
@@ -68,6 +68,38 @@ class SupervisorTests(unittest.TestCase):
         sup = self.make_sup()
         path = sup.send_message("MAIN_AGENT", "RESEARCHER", "inspect module A")
         self.assertTrue(path.exists())
+
+    def test_spawn_request_requires_human_approval(self):
+        sup = self.make_sup()
+        req = sup.request_child(
+            "RESEARCHER",
+            role="RESEARCH",
+            task="inspect module A",
+            reason="parallel review",
+        )
+        self.assertFalse(sup.store.exists("agents/RESEARCHER/state.json"))
+        child = sup.approve_child(req["request_id"])
+        self.assertEqual(child.agent_id, "RESEARCHER")
+        self.assertTrue(sup.store.exists(f"spawn_requests/approved/{req['request_id']}.json"))
+        self.assertFalse(sup.store.exists(f"spawn_requests/pending/{req['request_id']}.json"))
+
+    def test_spawn_denial_does_not_create_child(self):
+        sup = self.make_sup()
+        req = sup.request_child(
+            "RISK_REVIEWER",
+            role="REVIEW",
+            task="check risk assumptions",
+            reason="independent check",
+        )
+        decision = sup.deny_child(req["request_id"], "not needed for this round")
+        self.assertEqual(decision["status"], "DENIED")
+        self.assertFalse(sup.store.exists("agents/RISK_REVIEWER/state.json"))
+        self.assertTrue(sup.store.exists(f"spawn_requests/denied/{req['request_id']}.json"))
+
+    def test_unsafe_agent_id_is_rejected(self):
+        sup = self.make_sup()
+        with self.assertRaisesRegex(ValueError, "unsafe"):
+            sup.request_child("../escape", "RESEARCH", "x", "y")
 
 
 if __name__ == "__main__":
